@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly check so an approaching Expires date shows up as a failed run.
+    - cron: "0 7 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Validate security.txt
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./check.sh
+      # GitHub only mails the person who triggered the run, and a cron run has
+      # no such person. An open issue notifies everyone watching the repo.
+      - name: Open an issue when the check fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if gh issue list --state open --label security-txt-check --json number --jq length | grep -qv '^0$'; then
+            echo "an issue is already open"; exit 0
+          fi
+          gh label create security-txt-check --color d93f0b --force >/dev/null
+          gh issue create \
+            --title "security.txt check failed" \
+            --label security-txt-check \
+            --body "check.sh failed in $RUN_URL. Most likely the Expires date is due; update security.txt and close this issue."
+
+  image:
+    name: Build & push image (ghcr.io)
+    needs: check
+    if: github.event_name != 'schedule'
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/xyphen-it/security-txt
+          # Only main is pushed. main-<run#> is what the Flux ImagePolicy in
+          # iaac-k8s (security-txt-image-automation) sorts on.
+          tags: |
+            type=raw,value=main-${{ github.run_number }}
+            type=sha,format=long
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
