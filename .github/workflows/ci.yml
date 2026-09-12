@@ -43,7 +43,10 @@ jobs:
     name: Build & push image (ghcr.io)
     needs: check
     if: github.event_name != 'schedule'
-    runs-on: [self-hosted, linux, x64]
+    # GitHub-hosted on purpose: this repo is public, and the org runner group
+    # does not serve public repos (nor should it, PRs from forks would run on
+    # our own machines). The image is tiny, so a hosted runner is fine.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
